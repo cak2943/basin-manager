@@ -1,0 +1,38 @@
+================================================================================
+BASIN FILE COMPARISON RESULTS
+================================================================================
+
+File 1: T:\SW\7-Hydrology\Milestone 3\_Submittal\Working_12182025\BAR\HEC-HMS_v4.12\BAR\Existing_Conditions_01_.basin
+File 2: T:\SW\7-Hydrology\Milestone 3\_Submittal\Working_12182025\BAR\HEC-HMS_v4.12\BAR\May_2015.basin
+
+================================================================================
+Objects only in File 1 (12):
+================================================================================
+  Basin        | Existing_Conditions_01%
+  Junction     | J_BAR20
+  Junction     | J_GRA0120_GRA0130
+  Junction     | J_HOL0070_BAR0130
+  Junction     | J_LBA120_LBA130
+  Junction     | J_LBA440_LBA450
+  Junction     | J_TSB0010_TSB0015
+  Junction     | J_TSB0015
+  Diversion    | NFS0040_Overflow
+  Reach        | R_SSB0320a
+  Reach        | R_SSB0320b
+  Source       | WilliamsonCreek Overflows
+
+================================================================================
+Objects only in File 2 (3):
+================================================================================
+  Junction     | J_20
+  Basin        | May_2015
+  Reach        | R_SSB0320
+
+================================================================================
+SUMMARY
+================================================================================
+  Total in File 1:     1631
+  Total in File 2:     1622
+  Only in File 1:      12
+  Only in File 2:      3
+================================================================================
