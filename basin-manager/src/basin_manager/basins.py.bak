@@ -6,7 +6,69 @@ from datetime import datetime
 import warnings
 from abc import ABC, abstractmethod
 
-from .hms_file_object import HMSFileObject
+
+class FileObject(ABC):
+    """Abstract base class for objects in HMS files (basin, pdata, etc.)"""
+    
+    def __init__(self, object_type: str, name: str, metadata: str):
+        """Initialize a file object.
+        
+        Args:
+            object_type: Type of object as a string (e.g., 'Basin', 'Subbasin', 'Table')
+            name: Name of the object
+            metadata: Metadata content (lines between header and End:)
+        """
+        self.object_type = object_type
+        self.name = name
+        self.metadata = metadata
+    
+    def get_key_field(self, field_name: str) -> Optional[str]:
+        """Extract a key field value from metadata.
+        
+        Args:
+            field_name: The field to search for (e.g., 'Downstream:', 'Table Type:')
+            
+        Returns:
+            The field value if found, None otherwise
+        """
+        for line in self.metadata.split('\n'):
+            if line.strip().startswith(field_name):
+                parts = line.split(':', 1)
+                if len(parts) > 1:
+                    return parts[1].strip()
+        return None
+    
+    def to_string(self) -> str:
+        """Convert object back to file format"""
+        return f"{self.object_type}: {self.name}\n{self.metadata}End:\n\n"
+    
+    @staticmethod
+    def from_string(content: str, object_type: str) -> Optional['FileObject']:
+        """Parse a file object from string content.
+        
+        Args:
+            content: The full text of the object (header through End:)
+            object_type: The type of object to create (used by subclasses)
+            
+        Returns:
+            A FileObject instance if parsing succeeds, None otherwise
+        """
+        lines = content.strip().split('\n')
+        if not lines or ':' not in lines[0]:
+            return None
+        
+        # Parse header
+        header_parts = lines[0].split(':', 1)
+        if len(header_parts) != 2:
+            return None
+        
+        name = header_parts[1].strip()
+        
+        # Extract metadata (everything between header and End:)
+        metadata_lines = lines[1:-1]  # Exclude header and End:
+        metadata = '\n'.join(metadata_lines) + '\n' if metadata_lines else ''
+        
+        return FileObject(object_type, name, metadata)
 
 
 class ObjectType(Enum):
@@ -21,53 +83,36 @@ class ObjectType(Enum):
 
 
 @dataclass
-class BasinObject(HMSFileObject):
+class BasinObject(FileObject):
     """Base class for all basin objects"""
     
     def __init__(self, object_type: ObjectType, name: str, metadata: str):
+        # Initialize parent with string representation of enum
         super().__init__(object_type.value, name, metadata)
         self._object_type_enum = object_type
     
     @property
-    def object_type_enum(self) -> ObjectType:
+    def object_type(self) -> ObjectType:
         """Return the object type as an enum (for backward compatibility)"""
         return self._object_type_enum
     
+    @object_type.setter
+    def object_type(self, value: ObjectType) -> None:
+        """Set the object type as an enum"""
+        self._object_type_enum = value
+    
     @property
     def downstream(self) -> Optional[str]:
-        """Extract the downstream element name from metadata."""
+        """Extract the downstream element name from metadata.
+        
+        Returns:
+            The downstream element name if found, None otherwise
+        """
         return self.get_key_field('Downstream:')
     
     def to_string(self) -> str:
         """Convert object back to basin file format"""
-        return f"{self._object_type_enum.value}: {self.name}\n{self.metadata}End:\n\n"
-    
-    @staticmethod
-    def from_string(content: str) -> Optional['BasinObject']:
-        """Parse a basin object from string content"""
-        lines = content.strip().split('\n')
-        if not lines or ':' not in lines[0]:
-            return None
-        
-        # Parse header
-        header_parts = lines[0].split(':', 1)
-        if len(header_parts) != 2:
-            return None
-        
-        object_type_str = header_parts[0].strip()
-        name = header_parts[1].strip()
-        
-        # Find matching object type
-        try:
-            object_type = ObjectType(object_type_str)
-        except ValueError:
-            return None
-        
-        # Extract metadata (everything between header and End:)
-        metadata_lines = lines[1:-1]  # Exclude header and End:
-        metadata = '\n'.join(metadata_lines) + '\n' if metadata_lines else ''
-        
-        return BasinObject(object_type, name, metadata)
+        return f"{self.object_type.value}: {self.name}\n{self.metadata}End:\n\n"
 
 
 class Subbasin(BasinObject):
@@ -113,62 +158,92 @@ class Basin(BasinObject):
 
 
 class GenericFile(ABC):
-    """Abstract base class for HMS files (basin, pdata, etc.)"""
+    """Abstract base class for HMS files (basin, pdata, etc.)
+    
+    Provides common file I/O, parsing, and object management functionality.
+    Subclasses should implement _create_object_from_type() to handle specific object types.
+    """
     
     def __init__(self, filepath: str):
-        """Initialize a generic HMS file."""
+        """Initialize a generic HMS file.
+        
+        Args:
+            filepath: Path to the file
+        """
         self.filepath = filepath
-        self.objects: List[HMSFileObject] = []
-        self.object_map: Dict[str, HMSFileObject] = {}
-        self.preamble = ""
-        self.postamble = ""
+        self.objects: List[FileObject] = []
+        self.object_map: Dict[str, FileObject] = {}
+        self.preamble = ""  # Content before first object
+        self.postamble = ""  # Content after last object
     
     @abstractmethod
-    def _create_object_from_type(self, type_str: str, name: str, metadata: str) -> Optional[HMSFileObject]:
-        """Create an appropriate object instance for this file type."""
+    def _create_object_from_type(self, type_str: str, name: str, metadata: str) -> Optional[FileObject]:
+        """Create an appropriate object instance for this file type.
+        
+        Args:
+            type_str: The object type as a string (e.g., 'Basin', 'Table')
+            name: The object name
+            metadata: The object metadata
+            
+        Returns:
+            A FileObject subclass instance, or None if the type is not valid
+        """
         pass
     
     @abstractmethod
     def _get_valid_types(self) -> List[str]:
-        """Return list of valid object types for this file."""
+        """Return list of valid object types for this file.
+        
+        Returns:
+            List of valid type strings (e.g., ['Basin', 'Subbasin', 'Reach', ...])
+        """
         pass
     
     def read(self) -> None:
         """Read and parse the file"""
         with open(self.filepath, 'r', encoding='utf-8') as f:
             content = f.read()
+        
         self._parse_content(content)
     
     def _parse_content(self, content: str) -> None:
         """Parse file content into objects"""
         lines = content.split('\n')
+        
         current_object_lines = []
         preamble_lines = []
         postamble_lines = []
         in_object = False
         found_first_object = False
         i = 0
+        
         valid_types = self._get_valid_types()
         
         while i < len(lines):
             line = lines[i]
             
+            # Handle End: inside an object first so it is not treated as a header.
             if in_object and line.strip() == 'End:':
                 current_object_lines.append(line)
                 self._add_parsed_object('\n'.join(current_object_lines))
                 current_object_lines = []
                 in_object = False
                 found_first_object = True
+                # Skip the empty line after End: if it exists
                 if i + 1 < len(lines) and lines[i + 1].strip() == '':
                     i += 1
                 i += 1
                 continue
 
+            # Check if this line starts a new object
             if ':' in line and not line.startswith(' ') and not line.startswith('\t'):
+                # This might be an object header
                 if current_object_lines:
+                    # Process previous object (if file is malformed and no End:)
                     self._add_parsed_object('\n'.join(current_object_lines))
                     current_object_lines = []
                 
+                # Check if it's a valid object type
                 header_parts = line.split(':', 1)
                 if header_parts[0].strip() in valid_types:
                     current_object_lines.append(line)
@@ -191,6 +266,7 @@ class GenericFile(ABC):
             
             i += 1
         
+        # Handle any remaining content
         if current_object_lines:
             self._add_parsed_object('\n'.join(current_object_lines))
         
@@ -198,11 +274,12 @@ class GenericFile(ABC):
         self.postamble = '\n'.join(postamble_lines)
 
     def _add_parsed_object(self, object_str: str) -> None:
-        """Parse and add a single object"""
+        """Parse and add a single object to the collection"""
         lines = object_str.split('\n')
         if not lines or ':' not in lines[0]:
             return
         
+        # Parse header
         header_parts = lines[0].split(':', 1)
         if len(header_parts) != 2:
             return
@@ -210,6 +287,8 @@ class GenericFile(ABC):
         object_type_str = header_parts[0].strip()
         name = header_parts[1].strip()
         
+        # Extract metadata (everything between header and End:)
+        # Find the End: line and include everything between header and End:
         end_index = -1
         for idx in range(len(lines) - 1, -1, -1):
             if lines[idx].strip() == 'End:':
@@ -219,9 +298,11 @@ class GenericFile(ABC):
         if end_index == -1:
             return
         
+        # Get all lines between header and End:
         metadata_lines = lines[1:end_index]
         metadata = '\n'.join(metadata_lines) + '\n' if metadata_lines else ''
         
+        # Create object using subclass implementation
         obj = self._create_object_from_type(object_type_str, name, metadata)
         if obj is None:
             return
@@ -229,7 +310,7 @@ class GenericFile(ABC):
         self.objects.append(obj)
         self.object_map[name] = obj
 
-    def get_object(self, name: str) -> Optional[HMSFileObject]:
+    def get_object(self, name: str) -> Optional[FileObject]:
         """Get an object by name"""
         return self.object_map.get(name)
     
@@ -237,9 +318,11 @@ class GenericFile(ABC):
         """Remove an object by name"""
         if name not in self.object_map:
             return False
+        
         obj = self.object_map[name]
         self.objects.remove(obj)
         del self.object_map[name]
+        
         return True
     
     def write(self, filepath: Optional[str] = None) -> None:
@@ -264,41 +347,146 @@ class GenericFile(ABC):
         return [(obj.name, obj.object_type) for obj in self.objects]
 
 
-class BasinFile(GenericFile):
+
     """Class to manage .basin files"""
     
     def __init__(self, filepath: str):
         """Initialize BasinFile with path to .basin file"""
-        super().__init__(filepath)
-    
-    def _get_valid_types(self) -> List[str]:
-        """Return list of valid basin object types"""
-        return [obj_type.value for obj_type in ObjectType]
-    
-    def _create_object_from_type(self, type_str: str, name: str, metadata: str) -> Optional[BasinObject]:
-        """Create a basin object of the appropriate type"""
-        try:
-            object_type = ObjectType(type_str)
-        except ValueError:
-            return None
+        self.filepath = filepath
+        self.objects: List[BasinObject] = []
+        self.object_map: Dict[str, BasinObject] = {}
+        self.preamble = ""  # Content before first object
+        self.postamble = ""  # Content after last object
         
-        if object_type == ObjectType.SUBBASIN:
-            return Subbasin(name, metadata)
-        elif object_type == ObjectType.REACH:
-            return Reach(name, metadata)
-        elif object_type == ObjectType.JUNCTION:
-            return Junction(name, metadata)
-        elif object_type == ObjectType.DIVERSION:
-            return Diversion(name, metadata)
-        elif object_type == ObjectType.RESERVOIR:
-            return Reservoir(name, metadata)
-        elif object_type == ObjectType.SOURCE:
-            return Source(name, metadata)
-        elif object_type == ObjectType.BASIN:
-            return Basin(name, metadata)
-        else:
-            return None
+    def read(self) -> None:
+        """Read and parse the .basin file"""
+        with open(self.filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        self._parse_content(content)
     
+    def _parse_content(self, content: str) -> None:
+        """Parse basin file content into objects"""
+        lines = content.split('\n')
+        
+        current_object_lines = []
+        preamble_lines = []
+        postamble_lines = []
+        in_object = False
+        found_first_object = False
+        i = 0
+        
+        while i < len(lines):
+            line = lines[i]
+            
+            # Handle End: inside an object first so it is not treated as a header.
+            if in_object and line.strip() == 'End:':
+                current_object_lines.append(line)
+                self._add_parsed_object('\n'.join(current_object_lines))
+                current_object_lines = []
+                in_object = False
+                found_first_object = True
+                # Skip the empty line after End: if it exists
+                if i + 1 < len(lines) and lines[i + 1].strip() == '':
+                    i += 1
+                i += 1
+                continue
+
+            # Check if this line starts a new object
+            if ':' in line and not line.startswith(' ') and not line.startswith('\t'):
+                # This might be an object header
+                if current_object_lines:
+                    # Process previous object (if file is malformed and no End:)
+                    self._add_parsed_object('\n'.join(current_object_lines))
+                    current_object_lines = []
+                
+                # Check if it's a valid object type
+                header_parts = line.split(':', 1)
+                if header_parts[0].strip() in [obj_type.value for obj_type in ObjectType]:
+                    current_object_lines.append(line)
+                    in_object = True
+                    found_first_object = True
+                else:
+                    if in_object:
+                        current_object_lines.append(line)
+                    elif found_first_object:
+                        postamble_lines.append(line)
+                    else:
+                        preamble_lines.append(line)
+            else:
+                if in_object:
+                    current_object_lines.append(line)
+                elif found_first_object:
+                    postamble_lines.append(line)
+                else:
+                    preamble_lines.append(line)
+            
+            i += 1
+        
+        # Handle any remaining content
+        if current_object_lines:
+            self._add_parsed_object('\n'.join(current_object_lines))
+        
+        self.preamble = '\n'.join(preamble_lines)
+        self.postamble = '\n'.join(postamble_lines)
+
+    def _add_parsed_object(self, object_str: str) -> None:
+        """Parse and add a single object to the collection"""
+        lines = object_str.split('\n')
+        if not lines or ':' not in lines[0]:
+            return
+        
+        # Parse header
+        header_parts = lines[0].split(':', 1)
+        if len(header_parts) != 2:
+            return
+        
+        object_type_str = header_parts[0].strip()
+        name = header_parts[1].strip()
+        
+        # Find matching object type
+        try:
+            object_type = ObjectType(object_type_str)
+        except ValueError:
+            return
+        
+        # Extract metadata (everything between header and End:)
+        # Find the End: line and include everything between header and End:
+        end_index = -1
+        for idx in range(len(lines) - 1, -1, -1):
+            if lines[idx].strip() == 'End:':
+                end_index = idx
+                break
+        
+        if end_index == -1:
+            return
+        
+        # Get all lines between header and End:
+        metadata_lines = lines[1:end_index]
+        
+        metadata = '\n'.join(metadata_lines) + '\n' if metadata_lines else ''
+        
+        # Create appropriate object type
+        if object_type == ObjectType.SUBBASIN:
+            obj = Subbasin(name, metadata)
+        elif object_type == ObjectType.REACH:
+            obj = Reach(name, metadata)
+        elif object_type == ObjectType.JUNCTION:
+            obj = Junction(name, metadata)
+        elif object_type == ObjectType.DIVERSION:
+            obj = Diversion(name, metadata)
+        elif object_type == ObjectType.RESERVOIR:
+            obj = Reservoir(name, metadata)
+        elif object_type == ObjectType.SOURCE:
+            obj = Source(name, metadata)
+        elif object_type == ObjectType.BASIN:
+            obj = Basin(name, metadata)
+        else:
+            return
+        
+        self.objects.append(obj)
+        self.object_map[name] = obj
+
     def replace_object(self, object_name: str, metadata: str) -> bool:
         """
         Replace an existing object's metadata
@@ -461,7 +649,7 @@ class BasinFile(GenericFile):
         after_object = parent.objects[after_index].name
         
         # Add object to current file using parent's object type and metadata
-        return self.add_object(parent_obj.object_type_enum, object_name, parent_obj.metadata, 
+        return self.add_object(parent_obj.object_type, object_name, parent_obj.metadata, 
                               after_object)
     
     def update_downstream_from_parent(self, parent: 'BasinFile', object_name: str) -> bool:
@@ -582,4 +770,4 @@ class BasinFile(GenericFile):
     
     def list_objects_by_type(self, object_type: ObjectType) -> List[str]:
         """List all objects of a specific type"""
-        return [obj.name for obj in self.objects if obj.object_type_enum == object_type]
+        return [obj.name for obj in self.objects if obj.object_type == object_type]
